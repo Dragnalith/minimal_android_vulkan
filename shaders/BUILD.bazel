@@ -1,0 +1,15 @@
+load("//toolchains/glslc:defs.bzl", "glsl_shader")
+
+glsl_shader(
+    name       = "vert_spv",
+    src        = "triangle.vert",
+    target_env = "vulkan1.0",
+    visibility = ["//app:__pkg__"],
+)
+
+glsl_shader(
+    name       = "frag_spv",
+    src        = "triangle.frag",
+    target_env = "vulkan1.0",
+    visibility = ["//app:__pkg__"],
+)

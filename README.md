@@ -1,0 +1,1 @@
+This repository contains a minimal vulkan application compiled for android with Bazel

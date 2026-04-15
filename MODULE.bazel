@@ -1,0 +1,81 @@
+module(
+    name    = "vulkan_android_app",
+    version = "1.0.0",
+)
+
+bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "platforms",    version = "1.0.0")
+bazel_dep(name = "rules_cc",     version = "0.2.17")
+bazel_dep(name = "rules_java",   version = "9.6.1")
+
+bazel_dep(name = "protobuf", version = "33.4", repo_name = "com_google_protobuf")
+
+# ---------------------------------------------------------------------------
+# Local JDK (hermetic — thirdparty/jdk)
+# ---------------------------------------------------------------------------
+
+local_jdk_extension = use_extension(
+    "//toolchains/jdk:jdk_repo.bzl",
+    "local_jdk_extension",
+)
+local_jdk_extension.configure(
+    name      = "local_jdk",
+    java_home = "$WORKSPACE_ROOT/thirdparty/jdk",
+    version   = "25",
+)
+use_repo(local_jdk_extension, "local_jdk")
+
+register_toolchains("@local_jdk//:all")
+
+# ---------------------------------------------------------------------------
+# Android SDK (hermetic — thirdparty/android_sdk)
+# ---------------------------------------------------------------------------
+
+bazel_dep(name = "rules_android", version = "0.7.1")
+
+remote_android_extensions = use_extension(
+    "@rules_android//bzlmod_extensions:android_extensions.bzl",
+    "remote_android_tools_extensions",
+)
+use_repo(remote_android_extensions, "android_tools")
+
+android_sdk_repository_extension = use_extension(
+    "@rules_android//rules/android_sdk_repository:rule.bzl",
+    "android_sdk_repository_extension",
+)
+android_sdk_repository_extension.configure(
+    path                = "$WORKSPACE_ROOT/thirdparty/android_sdk",
+    build_tools_version = "36.1.0",
+    api_level           = 36,
+)
+use_repo(android_sdk_repository_extension, "androidsdk")
+
+register_toolchains(
+    "@rules_android//toolchains/android:android_default_toolchain",
+    "@rules_android//toolchains/android_sdk:android_sdk_tools",
+    "@androidsdk//:sdk-toolchain",
+    "@androidsdk//:all",
+)
+
+# ---------------------------------------------------------------------------
+# Android NDK (hermetic — thirdparty/android_sdk/ndk)
+# ---------------------------------------------------------------------------
+
+bazel_dep(name = "rules_android_ndk", version = "0.1.5")
+
+android_ndk_repository_extension = use_extension(
+    "@rules_android_ndk//:extension.bzl",
+    "android_ndk_repository_extension",
+)
+android_ndk_repository_extension.configure(
+    path = "$WORKSPACE_ROOT/thirdparty/android_sdk/ndk/29.0.14206865",
+)
+use_repo(android_ndk_repository_extension, "androidndk")
+
+register_toolchains("@androidndk//:all")
+
+# ---------------------------------------------------------------------------
+# glslc toolchain (workspace-local, uses glslc.exe from thirdparty/)
+# ---------------------------------------------------------------------------
+
+register_toolchains("//toolchains/glslc:glslc_windows_toolchain")
