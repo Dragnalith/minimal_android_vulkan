@@ -11,21 +11,27 @@ bazel_dep(name = "rules_java",   version = "9.6.1")
 bazel_dep(name = "protobuf", version = "33.4", repo_name = "com_google_protobuf")
 
 # ---------------------------------------------------------------------------
-# Local JDK (hermetic — thirdparty/jdk)
+# JDK (remote — rules_java remote_java_repository via java_repository)
 # ---------------------------------------------------------------------------
 
-local_jdk_extension = use_extension(
-    "//toolchains/jdk:jdk_repo.bzl",
-    "local_jdk_extension",
+java_repository = use_extension("@rules_java//java:extensions.bzl", "java_repository")
+java_repository.remote(
+    name = "local_jdk",
+    version = "25",
+    urls = ["https://pub-70bcd5944b1b46e29dfbe70a0347c448.r2.dev/jdk.zip"],
+    strip_prefix = "jdk",
+    target_compatible_with = [
+        "@platforms//os:windows",
+        "@platforms//cpu:x86_64",
+    ],
 )
-local_jdk_extension.configure(
-    name      = "local_jdk",
-    java_home = "$WORKSPACE_ROOT/thirdparty/jdk",
-    version   = "25",
+use_repo(
+    java_repository,
+    "local_jdk",
+    "local_jdk_toolchain_config_repo",
 )
-use_repo(local_jdk_extension, "local_jdk")
 
-register_toolchains("@local_jdk//:all")
+register_toolchains("@local_jdk_toolchain_config_repo//:all")
 
 # ---------------------------------------------------------------------------
 # Android SDK (hermetic — thirdparty/android_sdk)

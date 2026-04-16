@@ -1,3 +1,4 @@
 - [ ] Fetch JDK from an official distribution server
 - [ ] Use a recent version of rules_jvm_external to avoid having a JAVA_HOME in .bazelrc
 - [ ] Get a bash distribution
+- [ ] Disable C++ toolchain detection
