@@ -1,3 +1,5 @@
 - [ ] Understand and remove the need to java toolchains in //BUILD.bazel
 - [ ] bazel run ... for android
 - [ ] verify reproducibility (generate the same hash)
+- [ ] java.remote specify SHA256
+- [ ] sdkmanager download support sha256
