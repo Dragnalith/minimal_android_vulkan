@@ -1,0 +1,4 @@
+exports_files([
+    "BUILD.root.tpl",
+    "sdk_tool_toolchain.bzl",
+])

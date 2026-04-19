@@ -8,18 +8,12 @@ bazel_dep(name = "platforms",    version = "1.0.0")
 bazel_dep(name = "rules_cc",     version = "0.2.17")
 bazel_dep(name = "rules_java",   version = "9.6.1")
 
-bazel_dep(name = "protobuf", version = "33.4", repo_name = "com_google_protobuf")
-
-# ---------------------------------------------------------------------------
-# JDK (remote — rules_java remote_java_repository via java_repository)
-# ---------------------------------------------------------------------------
-
 java_repository = use_extension("@rules_java//java:extensions.bzl", "java_repository")
 java_repository.remote(
-    name = "local_jdk",
-    version = "25",
-    urls = ["https://pub-70bcd5944b1b46e29dfbe70a0347c448.r2.dev/jdk.zip"],
-    strip_prefix = "jdk",
+    name = "remote_jdk",
+    version = "21",
+    urls = ["https://aka.ms/download-jdk/microsoft-jdk-21-windows-x64.zip"],
+    strip_prefix = "jdk-21.0.10+7",
     target_compatible_with = [
         "@platforms//os:windows",
         "@platforms//cpu:x86_64",
@@ -27,61 +21,44 @@ java_repository.remote(
 )
 use_repo(
     java_repository,
-    "local_jdk",
-    "local_jdk_toolchain_config_repo",
+    "remote_jdk",
+    "remote_jdk_toolchain_config_repo",
 )
 
-register_toolchains("@local_jdk_toolchain_config_repo//:all")
-
-# ---------------------------------------------------------------------------
-# Android SDK (hermetic — thirdparty/android_sdk)
-# ---------------------------------------------------------------------------
-
-bazel_dep(name = "rules_android", version = "0.7.1")
-
-remote_android_extensions = use_extension(
-    "@rules_android//bzlmod_extensions:android_extensions.bzl",
-    "remote_android_tools_extensions",
-)
-use_repo(remote_android_extensions, "android_tools")
-
-android_sdk_repository_extension = use_extension(
-    "@rules_android//rules/android_sdk_repository:rule.bzl",
-    "android_sdk_repository_extension",
-)
-android_sdk_repository_extension.configure(
-    path                = "$WORKSPACE_ROOT/thirdparty/android_sdk",
-    build_tools_version = "36.1.0",
-    api_level           = 36,
-)
-use_repo(android_sdk_repository_extension, "androidsdk")
-
+# Registered before any other toolchain so they win resolution over
+# rules_java's auto-registered failing local_jdk.
 register_toolchains(
-    "@rules_android//toolchains/android:android_default_toolchain",
-    "@rules_android//toolchains/android_sdk:android_sdk_tools",
-    "@androidsdk//:sdk-toolchain",
-    "@androidsdk//:all",
+    "//:remote_jdk_runtime",
+    "//:remote_jdk_bootstrap_runtime",
 )
 
-# ---------------------------------------------------------------------------
-# Android NDK (hermetic — thirdparty/android_sdk/ndk)
-# ---------------------------------------------------------------------------
-
-bazel_dep(name = "rules_android_ndk", version = "0.1.5")
-
-android_ndk_repository_extension = use_extension(
-    "@rules_android_ndk//:extension.bzl",
-    "android_ndk_repository_extension",
-)
-android_ndk_repository_extension.configure(
-    path = "$WORKSPACE_ROOT/thirdparty/android_sdk/ndk/29.0.14206865",
-)
-use_repo(android_ndk_repository_extension, "androidndk")
-
-register_toolchains("@androidndk//:all")
-
-# ---------------------------------------------------------------------------
-# glslc toolchain (workspace-local, uses glslc.exe from thirdparty/)
-# ---------------------------------------------------------------------------
+register_toolchains("@remote_jdk_toolchain_config_repo//:all")
 
 register_toolchains("//toolchains/glslc:glslc_windows_toolchain")
+
+android = use_extension("//rules/android:extensions.bzl", "android")
+android.sdk(
+    url = "https://pub-70bcd5944b1b46e29dfbe70a0347c448.r2.dev/android_sdk.zip",
+    sha256 = "1e0a4e839224b06e59a26ff1cd618255061e09fea9e32a283d0fcdc3c5d935ae",
+    strip_prefix = "android_sdk",
+    build_tools = "36.1.0",
+    platform_version = "36",
+)
+android.ndk(
+    url = "https://pub-70bcd5944b1b46e29dfbe70a0347c448.r2.dev/android_ndk.zip",
+    sha256 = "d397fb8581f989760be8ecb81573d264bac4409c8e686171276cc033b9d35e1f",
+    strip_prefix = "android_ndk/29.0.14206865",
+    version = "29.0.14206865",
+    min_api = "24",
+)
+use_repo(
+    android,
+    "android_sdk",
+    "android_ndk",
+    "android_sdk_toolchains",
+    "android_ndk_toolchains",
+)
+register_toolchains(
+    "@android_sdk_toolchains//:sdk_toolchain",
+    "@android_ndk_toolchains//:all",
+)

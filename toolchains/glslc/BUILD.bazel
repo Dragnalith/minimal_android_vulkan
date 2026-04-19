@@ -7,7 +7,7 @@ toolchain_type(
 
 glslc_toolchain(
     name  = "glslc_windows",
-    glslc = "//thirdparty:android_sdk/ndk/29.0.14206865/shader-tools/windows-x86_64/glslc.exe",
+    glslc = "@android_ndk//:glslc",
     visibility = ["//visibility:private"],
 )
 

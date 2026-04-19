@@ -1,40 +1,29 @@
-load("@rules_android//rules:rules.bzl", "android_binary")
 load("@rules_cc//cc:defs.bzl", "cc_library")
-load("@rules_java//java:defs.bzl", "java_library")
-
-java_library(
-    name = "dex_placeholder",
-    srcs = ["DexPlaceholder.java"],
-)
+load("//rules/android:apk.bzl", "android_apk")
 
 cc_library(
     name = "vulkan_lib",
     srcs = ["cpp/vulkan_main.cpp"],
-    deps = ["@androidndk//:native_app_glue"],
+    deps = ["@android_ndk//:native_app_glue"],
     linkopts = [
-        "-u ANativeActivity_onCreate",
+        "-u",
+        "ANativeActivity_onCreate",
         "-lvulkan",
         "-landroid",
         "-llog",
         "-ldl",
     ],
     alwayslink = True,
-    copts = [
-        "-std=c++17",
-        "-isystem external/rules_android_ndk++android_ndk_repository_extension+androidndk/sources/android/native_app_glue",
-    ],
+    copts = ["-std=c++17"],
     visibility = ["//app:__pkg__"],
 )
 
-android_binary(
-    name          = "vulkan_triangle",
-    manifest      = "AndroidManifest.xml",
+android_apk(
+    name = "vulkan_triangle",
+    manifest = "AndroidManifest.xml",
     custom_package = "com.example.vulkantriangle",
-    deps          = [
-        ":dex_placeholder",
-        ":vulkan_lib",
-    ],
-    assets     = [
+    deps = [":vulkan_lib"],
+    assets = [
         "//shaders:vert_spv",
         "//shaders:frag_spv",
     ],

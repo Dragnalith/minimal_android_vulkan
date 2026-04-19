@@ -1,4 +1,2 @@
-common --@com_google_protobuf//bazel/toolchains:prefer_prebuilt_protoc
-common --repo_env=JAVA_HOME=../bazel_tools/jdk
+common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 build --android_platforms=//:x86_64,//:arm64-v8a
-build --shell_executable="C:/Program Files/Git/bin/bash.exe"

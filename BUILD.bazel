@@ -14,3 +14,19 @@ platform(
         "@platforms//os:android",
     ],
 )
+
+# Route every Java runtime toolchain lookup through @remote_jdk regardless of
+# --java_runtime_version. rules_java's default java_runtime_version=local_jdk
+# triggers auto-detection of a system JDK (via JAVA_HOME) which we explicitly
+# don't want; with these toolchains registered first in MODULE.bazel, they
+# always win over rules_java's failing local_jdk auto-config.
+toolchain(
+    name = "remote_jdk_runtime",
+    toolchain = "@remote_jdk//:jdk",
+    toolchain_type = "@bazel_tools//tools/jdk:runtime_toolchain_type",
+)
+toolchain(
+    name = "remote_jdk_bootstrap_runtime",
+    toolchain = "@remote_jdk//:jdk",
+    toolchain_type = "@bazel_tools//tools/jdk:bootstrap_runtime_toolchain_type",
+)
