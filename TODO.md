@@ -3,3 +3,4 @@
 - [ ] verify reproducibility (generate the same hash)
 - [ ] java.remote specify SHA256
 - [ ] sdkmanager download support sha256
+- [ ] `bazel run //tools/android:target -- input ...` (send key / text / tap events via `adb shell input`)

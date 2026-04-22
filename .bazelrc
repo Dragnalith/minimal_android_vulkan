@@ -1,2 +1,3 @@
 common --repo_env=BAZEL_DO_NOT_DETECT_CPP_TOOLCHAIN=1
 build --android_platforms=//:x86_64,//:arm64-v8a
+try-import %workspace%/user.bazelrc

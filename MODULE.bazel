@@ -7,10 +7,21 @@ bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_cc", version = "0.2.17")
 bazel_dep(name = "rules_java", version = "9.6.1")
+bazel_dep(name = "rules_python", version = "2.0.0-rc3")
+
+# Hermetic Python toolchain. rules_python fetches a standalone CPython from
+# python-build-standalone and registers it as the default toolchain, so no
+# system Python install is required to `bazel run //tools/android:*`.
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    is_default = True,
+    python_version = "3.12",
+)
 
 java_repository = use_extension("@rules_java//java:extensions.bzl", "java_repository")
 java_repository.remote(
     name = "remote_jdk",
+    sha256 = "45a44af1f832e720ea6ad90dd7b2c94a48b2e5bf2fab92b2403e975f78d7d5e1",
     strip_prefix = "jdk-21.0.10+7",
     target_compatible_with = [
         "@platforms//os:windows",
@@ -40,17 +51,21 @@ android = use_extension("//rules/android:extensions.bzl", "android")
 android.configure(
     build_tools = "36.1.0",
     cmdline_tools = "latest",
+    emulator = "latest",
     min_api = "24",
     ndk = "29.0.14206865",
     platform_tools = "latest",
     platform_version = "36",
+    system_image = "android-36;google_apis;x86_64",
 )
 use_repo(
     android,
+    "android_emulator",
     "android_ndk",
     "android_ndk_toolchains",
     "android_sdk",
     "android_sdk_toolchains",
+    "android_system_image",
 )
 
 register_toolchains(

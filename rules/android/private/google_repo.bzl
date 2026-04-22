@@ -1,10 +1,17 @@
-"""Resolve Android SDK / NDK archive URLs from Google's `repository2-3.xml`.
+"""Resolve Android SDK / NDK / system-image archive URLs from Google's
+transparency manifests.
 
-The manifest at `https://dl.google.com/android/repository/repository2-3.xml`
-publishes every `<remotePackage>` for build-tools, platforms, platform-tools,
-cmdline-tools, NDK, and more, with per-host archive URLs. It ships SHA-1
+The top-level manifest at
+`https://dl.google.com/android/repository/repository2-3.xml` publishes every
+`<remotePackage>` for build-tools, platforms, platform-tools, cmdline-tools,
+NDK, emulator, and more. System-images live in separate per-tag manifests
+rooted at `sys-img/<tag>/sys-img2-3.xml`. All of them ship SHA-1 only
 (which `ctx.download_and_extract` can't consume), so downloads run with
 `sha256=""` and the first-run SHA-256 is pinned via `MODULE.bazel.lock`.
+
+Archive URLs inside each manifest are relative to the manifest's own
+directory, so we carry a base URL alongside each manifest when merging
+packages into the index.
 
 `build_index(ctx)` returns:
 
@@ -14,13 +21,27 @@ cmdline-tools, NDK, and more, with per-host archive URLs. It ships SHA-1
       "platform-tools": {"36.0.0":      {"linux": url, ...}, ...},
       "cmdline-tools":  {"16.0":        {"linux": url, ...}, ...},
       "ndk":            {"29.0.14206865": {"windows": url, ...}, ...},
+      "emulator":       {"latest":      {"windows": url, ...}},
+      "system-images":  {"android-36;google_apis;x86_64": {"all": url}, ...},
     }
 """
 
 REPO_BASE = "https://dl.google.com/android/repository/"
 REPO_XML_URL = REPO_BASE + "repository2-3.xml"
 
-_CATEGORIES = ("build-tools", "platforms", "platform-tools", "cmdline-tools", "ndk")
+# Per-tag system-image manifests. Each XML's archive `<url>` entries are
+# relative to the XML's own directory, not REPO_BASE.
+_SYS_IMG_TAGS = ("android", "google_apis", "google_apis_playstore")
+
+_CATEGORIES = (
+    "build-tools",
+    "platforms",
+    "platform-tools",
+    "cmdline-tools",
+    "ndk",
+    "emulator",
+    "system-images",
+)
 
 def _extract_between(text, open_tag, close_tag, start = 0):
     """Return (inner, end_pos) for the first `<open_tag>...<close_tag>` after
@@ -70,21 +91,19 @@ def _version_key(v):
             parts.append((1, chunk))
     return parts
 
-def build_index(ctx):
+def _merge_manifest(ctx, index, xml_url, local_name, base_url):
+    """Fetch one repository XML manifest and merge its `<remotePackage>`
+    entries into `index`. `base_url` is prepended to each archive's relative
+    `<url>` to form the absolute download URL."""
     ctx.download(
-        url = [REPO_XML_URL],
-        output = "repository2-3.xml",
+        url = [xml_url],
+        output = local_name,
         allow_fail = False,
     )
-    text = ctx.read("repository2-3.xml")
+    text = ctx.read(local_name)
 
-    index = {cat: {} for cat in _CATEGORIES}
-
-    # Split by `<remotePackage ` and process each block. The first chunk is
-    # everything before the first <remotePackage>, which we discard.
     chunks = text.split("<remotePackage ")
     for chunk in chunks[1:]:
-        # Extract `path="..."` attribute from the opening tag prefix.
         path_marker = 'path="'
         p_start = chunk.find(path_marker)
         if p_start < 0:
@@ -117,8 +136,28 @@ def build_index(ctx):
         per_os = {}
         for arch in archives:
             host_os = arch["host_os"] or "all"
-            per_os[host_os] = REPO_BASE + arch["url"]
+            per_os[host_os] = base_url + arch["url"]
         index[category][version] = per_os
+
+def build_index(ctx):
+    index = {cat: {} for cat in _CATEGORIES}
+
+    # Top-level manifest: build-tools, platforms, platform-tools,
+    # cmdline-tools, ndk, emulator, ...
+    _merge_manifest(ctx, index, REPO_XML_URL, "repository2-3.xml", REPO_BASE)
+
+    # Per-tag system-image manifests. Each is keyed by a `<tag>` (android,
+    # google_apis, google_apis_playstore) and its archive URLs are relative
+    # to that manifest's directory, not REPO_BASE.
+    for tag in _SYS_IMG_TAGS:
+        sub_base = REPO_BASE + "sys-img/" + tag + "/"
+        _merge_manifest(
+            ctx,
+            index,
+            sub_base + "sys-img2-3.xml",
+            "sys-img-{}.xml".format(tag),
+            sub_base,
+        )
 
     return index
 
