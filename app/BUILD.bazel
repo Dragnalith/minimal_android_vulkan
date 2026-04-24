@@ -1,5 +1,6 @@
 load("@rules_cc//cc:defs.bzl", "cc_library")
 load("//rules/android:apk.bzl", "android_apk")
+load("//rules/android:emulator.bzl", "android_emulator")
 
 cc_library(
     name = "vulkan_lib",
@@ -18,6 +19,11 @@ cc_library(
     visibility = ["//app:__pkg__"],
 )
 
+android_emulator(
+    name = "emulator",
+    visibility = ["//visibility:public"],
+)
+
 android_apk(
     name = "vulkan_triangle",
     manifest = "AndroidManifest.xml",
@@ -28,5 +34,6 @@ android_apk(
         "//shaders:frag_spv",
     ],
     assets_dir = "",
+    default_emulator = ":emulator",
     visibility = ["//visibility:public"],
 )

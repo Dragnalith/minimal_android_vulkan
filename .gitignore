@@ -4,3 +4,4 @@ thirdparty/*
 _build
 .claude/settings.local.json
 user.bazelrc
+.mado

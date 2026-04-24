@@ -20,3 +20,9 @@ filegroup(
     srcs = ["classes.dex"],
     visibility = ["//visibility:public"],
 )
+
+# Python templates expanded by the Android runner rules.
+exports_files([
+    "apk_runner.py.tpl",
+    "emulator_runner.py.tpl",
+])

@@ -12,9 +12,11 @@ bash/cmd.exe and runs identically on every host.
 
 load("@rules_cc//cc/common:cc_common.bzl", "cc_common")
 load("@rules_cc//cc/common:cc_info.bzl", "CcInfo")
+load("//rules/android/private:runner_common.bzl", "rlocation_path", "write_python_launcher")
 
 _JAVA_RUNTIME_TOOLCHAIN = "@bazel_tools//tools/jdk:runtime_toolchain_type"
-_SDK_TOOLCHAIN = "@android_sdk_toolchains//:sdk_toolchain_type"
+_SDK_TOOLCHAIN = "//rules/android:sdk_toolchain_type"
+_PYTHON_TOOLCHAIN = "@rules_python//python:toolchain_type"
 
 # Platforms are authored as //:arm64-v8a, //:x86_64 etc. — the target name is
 # the Android ABI string that goes into lib/<abi>/ inside the APK.
@@ -178,6 +180,58 @@ def _apksigner_sign(ctx, sdk, java_runtime, keystore, in_apk, out_apk):
         mnemonic = "ApkSign",
     )
 
+def _py_string(value):
+    return repr(value)
+
+def _write_apk_runner(ctx, sdk, final_apk):
+    runner_script = ctx.actions.declare_file(ctx.label.name + "_runner.py")
+    default_emulator_path = ""
+    default_emulator_runfiles = []
+    default_emulator_files = []
+    if ctx.attr.default_emulator:
+        default_info = ctx.attr.default_emulator[DefaultInfo]
+        executable = default_info.files_to_run.executable
+        if not executable:
+            fail("default_emulator must be an executable target.")
+        default_emulator_path = rlocation_path(executable)
+        default_emulator_files.append(executable)
+        default_emulator_runfiles.append(default_info.default_runfiles)
+
+    ctx.actions.expand_template(
+        template = ctx.file._apk_runner_template,
+        output = runner_script,
+        substitutions = {
+            "__MAIN_REPOSITORY__": _py_string(ctx.workspace_name),
+            "__ADB_RLOCATION__": _py_string(rlocation_path(ctx.file._adb)),
+            "__AAPT2_RLOCATION__": _py_string(rlocation_path(sdk.aapt2)),
+            "__APK_RLOCATION__": _py_string(rlocation_path(final_apk)),
+            "__DEFAULT_EMULATOR_RLOCATION__": _py_string(default_emulator_path),
+        },
+        is_executable = True,
+    )
+
+    py_runtime = ctx.toolchains[_PYTHON_TOOLCHAIN].py3_runtime
+    python_executable = py_runtime.interpreter
+    if not python_executable:
+        fail("android_apk currently requires a hermetic Python toolchain.")
+
+    launcher = write_python_launcher(ctx, ctx.label.name, python_executable, runner_script)
+    runfiles = ctx.runfiles(
+        files = [
+            final_apk,
+            runner_script,
+            launcher,
+            ctx.file._adb,
+            sdk.aapt2,
+        ] + default_emulator_files,
+        transitive_files = depset(
+            ctx.files._platform_tools_runtime,
+            transitive = [py_runtime.files],
+        ),
+    )
+    runfiles = runfiles.merge_all(default_emulator_runfiles)
+    return launcher, runner_script, runfiles
+
 def _android_apk_impl(ctx):
     sdk = ctx.toolchains[_SDK_TOOLCHAIN].sdktoolchaininfo
     java_runtime = ctx.toolchains[_JAVA_RUNTIME_TOOLCHAIN].java_runtime
@@ -191,22 +245,26 @@ def _android_apk_impl(ctx):
         abi_to_libcxx[abi] = libcxx_target.files.to_list()[0]
 
     asset_dir_path, staged_assets = _stage_assets(ctx)
-    base_apk = ctx.actions.declare_file(ctx.label.name + ".base.apk")
+    apk_stem = ctx.attr.apk_name or ctx.label.name
+    base_apk = ctx.actions.declare_file(apk_stem + ".base.apk")
     _aapt2_link(ctx, sdk, base_apk, asset_dir_path, staged_assets)
 
-    stitched = ctx.actions.declare_file(ctx.label.name + ".stitched.apk")
+    stitched = ctx.actions.declare_file(apk_stem + ".stitched.apk")
     _singlejar_stitch(ctx, base_apk, abi_to_so, abi_to_libcxx, stitched)
 
-    aligned = ctx.actions.declare_file(ctx.label.name + ".aligned.apk")
+    aligned = ctx.actions.declare_file(apk_stem + ".aligned.apk")
     _zipalign(ctx, sdk, stitched, aligned)
 
     keystore = ctx.file.debug_key
-    final_apk = ctx.actions.declare_file(ctx.label.name + ".apk")
+    final_apk = ctx.actions.declare_file(apk_stem + ".apk")
     _apksigner_sign(ctx, sdk, java_runtime, keystore, aligned, final_apk)
 
+    launcher, runner_script, runfiles = _write_apk_runner(ctx, sdk, final_apk)
+
     return [DefaultInfo(
-        files = depset([final_apk]),
-        runfiles = ctx.runfiles(files = [final_apk]),
+        files = depset([final_apk, runner_script, launcher]),
+        executable = launcher,
+        runfiles = runfiles,
     )]
 
 android_apk = rule(
@@ -217,12 +275,19 @@ android_apk = rule(
             mandatory = True,
         ),
         "custom_package": attr.string(mandatory = True),
+        "apk_name": attr.string(default = ""),
         "deps": attr.label_list(
             providers = [CcInfo],
             cfg = _android_split_transition,
         ),
         "assets": attr.label_list(allow_files = True),
         "assets_dir": attr.string(default = ""),
+        "default_emulator": attr.label(
+            executable = True,
+            cfg = "target",
+            allow_files = True,
+            doc = "Optional android_emulator target to start when no Android target is available.",
+        ),
         "linkopts": attr.string_list(default = []),
         "min_sdk_version": attr.string(default = "24"),
         "target_sdk_version": attr.string(default = "36"),
@@ -256,6 +321,21 @@ android_apk = rule(
             cfg = "exec",
             allow_files = True,
         ),
+        "_adb": attr.label(
+            allow_single_file = True,
+            default = "@android_sdk//:adb",
+        ),
+        "_platform_tools_runtime": attr.label(
+            allow_files = True,
+            default = "@android_sdk//:platform_tools_runtime",
+        ),
+        "_apk_runner_template": attr.label(
+            allow_single_file = True,
+            default = "//rules/android/private:apk_runner.py.tpl",
+        ),
+        "_windows_constraint": attr.label(
+            default = "@platforms//os:windows",
+        ),
         "_allowlist_function_transition": attr.label(
             default = "@bazel_tools//tools/allowlists/function_transition_allowlist",
         ),
@@ -263,6 +343,8 @@ android_apk = rule(
     toolchains = [
         _SDK_TOOLCHAIN,
         _JAVA_RUNTIME_TOOLCHAIN,
+        _PYTHON_TOOLCHAIN,
     ],
     fragments = ["cpp"],
+    executable = True,
 )

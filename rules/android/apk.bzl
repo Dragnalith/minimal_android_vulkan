@@ -9,8 +9,14 @@ Usage:
         custom_package = "com.example.my_app",
         deps           = [":my_cc_lib"],
         assets         = ["//shaders:vert_spv"],
-        assets_dir     = "",
+        default_emulator = ":emulator",
     )
+
+    bazel run //:my_app
+    bazel run //:my_app -- --device
+    bazel run //:my_app -- --emulator=emulator-5554
+    bazel run //:my_app -- log
+    bazel run //:my_app -- list
 """
 
 load("//rules/android/private:apk_impl.bzl", _android_apk = "android_apk")
