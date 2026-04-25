@@ -1,3 +1,5 @@
+load(":adb.bzl", "adb")
+
 package(default_visibility = ["//visibility:public"])
 
 # The Android SDK toolchain type. Kept here (not in the generated
@@ -9,3 +11,7 @@ package(default_visibility = ["//visibility:public"])
 # `@android_sdk_toolchains`; the rule + provider live at
 # //rules/android:sdk_toolchain.bzl.
 toolchain_type(name = "sdk_toolchain_type")
+
+# Stable entry point for `bazel run //rules/android:adb -- <args>` — proxies
+# through to the adb.exe shipped with @android_sdk's platform-tools.
+adb(name = "adb")

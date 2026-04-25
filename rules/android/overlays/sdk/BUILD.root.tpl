@@ -44,3 +44,26 @@ filegroup(
     name = "cmdline_tools_runtime",
     srcs = glob(["cmdline-tools/latest/**/*"]),
 )
+
+# Emulator binary. Substituted to `emulator.exe` on Windows, `emulator`
+# elsewhere, at fetch time. Only present when emulator was requested.
+filegroup(
+    name = "emulator",
+    srcs = ["emulator/{emulator_exe}"],
+)
+
+# The emulator binary dynamically loads dozens of sibling DLLs, qemu
+# sub-binaries, drivers and resource files; the whole emulator/ tree must be
+# staged in runfiles. Empty when emulator wasn't requested.
+filegroup(
+    name = "emulator_runtime",
+    srcs = glob(["emulator/**/*"], allow_empty = True),
+)
+
+# All system-image files; the emulator and avdmanager walk this tree to
+# discover and launch installed system images. Empty when system_image
+# wasn't requested.
+filegroup(
+    name = "system_image_runtime",
+    srcs = glob(["system-images/**/*"], allow_empty = True),
+)

@@ -60,12 +60,10 @@ android.configure(
 )
 use_repo(
     android,
-    "android_emulator",
     "android_ndk",
     "android_ndk_toolchains",
     "android_sdk",
     "android_sdk_toolchains",
-    "android_system_image",
 )
 
 register_toolchains(

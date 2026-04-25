@@ -4,15 +4,23 @@ load("//rules/android/private:runner_common.bzl", "rlocation_path", "write_pytho
 
 _PYTHON_TOOLCHAIN = "@rules_python//python:toolchain_type"
 
+# avdmanager rejects AVD names outside this character set, so reject early at
+# analysis time rather than hand the user a cryptic Java stack trace at run.
+_AVD_NAME_ALLOWED = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-"
+
+def _validate_avd_name(name):
+    for ch in name.elems():
+        if ch not in _AVD_NAME_ALLOWED:
+            fail(
+                "android_emulator: target name '{}' contains '{}', which is not valid in an AVD name. Allowed: A-Z a-z 0-9 . _ -".format(name, ch),
+            )
+
 def _py_string(value):
     return repr(value)
 
-def _main_repo_label(label):
-    if label.package:
-        return "//{}:{}".format(label.package, label.name)
-    return "//:{}".format(label.name)
-
 def _android_emulator_impl(ctx):
+    _validate_avd_name(ctx.label.name)
+
     runner_script = ctx.actions.declare_file(ctx.label.name + "_runner.py")
     ctx.actions.expand_template(
         template = ctx.file._emulator_runner_template,
@@ -23,9 +31,8 @@ def _android_emulator_impl(ctx):
             "__ADB_RLOCATION__": _py_string(rlocation_path(ctx.file._adb)),
             "__AVDMANAGER_RLOCATION__": _py_string(rlocation_path(ctx.file._avdmanager)),
             "__JAVA_RLOCATION__": _py_string(rlocation_path(ctx.file._java)),
-            "__SYSTEM_IMAGE_MARKER_RLOCATION__": _py_string(rlocation_path(ctx.file._system_image_marker)),
             "__SYSTEM_IMAGE__": _py_string(ctx.attr.system_image),
-            "__LABEL__": _py_string(_main_repo_label(ctx.label)),
+            "__AVD_NAME__": _py_string(ctx.label.name),
         },
         is_executable = True,
     )
@@ -51,7 +58,6 @@ def _android_emulator_impl(ctx):
             ctx.file._adb,
             ctx.file._avdmanager,
             ctx.file._java,
-            ctx.file._system_image_marker,
         ],
         transitive_files = depset(
             runtime_files,
@@ -77,11 +83,11 @@ android_emulator = rule(
         ),
         "_emulator_exe": attr.label(
             allow_single_file = True,
-            default = "@android_emulator//:emulator",
+            default = "@android_sdk//:emulator",
         ),
         "_emulator_runtime": attr.label(
             allow_files = True,
-            default = "@android_emulator//:emulator_runtime",
+            default = "@android_sdk//:emulator_runtime",
         ),
         "_adb": attr.label(
             allow_single_file = True,
@@ -99,13 +105,9 @@ android_emulator = rule(
             allow_files = True,
             default = "@android_sdk//:cmdline_tools_runtime",
         ),
-        "_system_image_marker": attr.label(
-            allow_single_file = True,
-            default = "@android_system_image//:package_marker",
-        ),
         "_system_image_runtime": attr.label(
             allow_files = True,
-            default = "@android_system_image//:system_image_runtime",
+            default = "@android_sdk//:system_image_runtime",
         ),
         "_java": attr.label(
             allow_single_file = True,

@@ -1,11 +1,8 @@
 """Generated runner for one android_emulator target."""
 
 import argparse
-import hashlib
-import json
 import os
 import re
-import shutil
 import subprocess
 import sys
 import time
@@ -15,9 +12,8 @@ EMULATOR_EXE_RLOCATION = __EMULATOR_EXE_RLOCATION__
 ADB_RLOCATION = __ADB_RLOCATION__
 AVDMANAGER_RLOCATION = __AVDMANAGER_RLOCATION__
 JAVA_RLOCATION = __JAVA_RLOCATION__
-SYSTEM_IMAGE_MARKER_RLOCATION = __SYSTEM_IMAGE_MARKER_RLOCATION__
 SYSTEM_IMAGE = __SYSTEM_IMAGE__
-LABEL = __LABEL__
+AVD_NAME = __AVD_NAME__
 
 BOOT_TIMEOUT_SEC = 300
 SHUTDOWN_TIMEOUT_SEC = 30
@@ -91,26 +87,8 @@ def rlocation(path):
     raise SystemExit("runfiles: cannot resolve '%s'" % path)
 
 
-def mangle_label(label):
-    return label.lstrip("/").replace("/", "_").replace(":", "_")
-
-
-def derived_avd_name(label):
-    mangled = mangle_label(label)
-    if len(mangled) <= 40:
-        return "bz_" + mangled
-    digest = hashlib.sha1(label.encode("utf-8")).hexdigest()[:10]
-    return "bz_" + mangled[:28] + "_" + digest
-
-
 def workspace_root():
     return os.environ.get("BUILD_WORKSPACE_DIRECTORY") or os.getcwd()
-
-
-def state_dir_for(label):
-    return os.path.join(
-        workspace_root(), "_build", "android_emulators", mangle_label(label)
-    )
 
 
 def hermetic_env(java_home, sdk_root, avd_home):
@@ -154,13 +132,17 @@ def adb_devices(adb, env):
     return rows
 
 
-def running_serials(adb, env):
-    return [serial for serial, _state in adb_devices(adb, env) if serial.startswith("emulator-")]
+def running_emulator_serials(adb, env):
+    return [
+        serial
+        for serial, _state in adb_devices(adb, env)
+        if serial.startswith("emulator-")
+    ]
 
 
 def used_emulator_ports(adb, env):
     ports = set()
-    for serial in running_serials(adb, env):
+    for serial in running_emulator_serials(adb, env):
         match = re.match(r"emulator-(\d+)", serial)
         if match:
             ports.add(int(match.group(1)))
@@ -174,6 +156,32 @@ def pick_free_port(used):
     raise SystemExit(
         "No free emulator console port in [%d, %d]." % (EMULATOR_PORT_MIN, EMULATOR_PORT_MAX)
     )
+
+
+def query_avd_name(adb, env, serial):
+    """Ask the emulator's console which AVD it's running. Returns None if the
+    query fails (e.g. the emulator's console isn't ready yet)."""
+    result = run_capture([adb, "-s", serial, "emu", "avd", "name"], env)
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line or line == "OK":
+            continue
+        return line
+    return None
+
+
+def find_our_serial(adb, env, avd_name):
+    """Return the emulator-NNNN serial running our AVD, or None.
+
+    Live source of truth: poll every running emulator's console for its AVD
+    name. No on-disk state file to drift from reality.
+    """
+    for serial in running_emulator_serials(adb, env):
+        if query_avd_name(adb, env, serial) == avd_name:
+            return serial
+    return None
 
 
 def avd_exists(avd_home, avd_name):
@@ -204,77 +212,18 @@ def repair_avd_pointer(avd_home, avd_name):
             f.writelines(out)
 
 
-def _ensure_junction(link, target):
-    if os.name == "nt":
-        link = os.path.normpath(link)
-        target = os.path.normpath(target)
-
-    if os.path.lexists(link):
-        try:
-            current = os.path.realpath(link)
-            if os.path.normcase(os.path.normpath(current)) == os.path.normcase(os.path.normpath(target)):
-                return
-        except OSError:
-            pass
-
-        is_junction = hasattr(os.path, "isjunction") and os.path.isjunction(link)
-        if is_junction:
-            os.rmdir(link)
-        elif os.path.isdir(link) and not os.path.islink(link):
-            shutil.rmtree(link)
-        else:
-            os.unlink(link)
-
-    if os.name == "nt":
-        result = subprocess.run(
-            ["cmd.exe", "/c", "mklink", "/J", link, target],
-            capture_output=True,
-            text=True,
-        )
-        if result.returncode != 0:
-            raise SystemExit(
-                "mklink /J %s -> %s failed: %s"
-                % (link, target, result.stderr.strip() or result.stdout.strip())
-            )
-    else:
-        os.symlink(target, link)
-
-
-def _build_avd_sdk_view(state_dir, sdk_root, sysimg_root, emulator_root):
-    view_root = os.path.join(state_dir, "sdk_view")
-    os.makedirs(view_root, exist_ok=True)
-    for package_dir in ("cmdline-tools", "platform-tools", "platforms", "build-tools"):
-        _ensure_junction(
-            os.path.join(view_root, package_dir),
-            os.path.join(sdk_root, package_dir),
-        )
-    _ensure_junction(
-        os.path.join(view_root, "emulator"),
-        emulator_root,
-    )
-    _ensure_junction(
-        os.path.join(view_root, "system-images"),
-        os.path.join(sysimg_root, "system-images"),
-    )
-    try:
-        os.remove(os.path.join(view_root, ".knownPackages"))
-    except FileNotFoundError:
-        pass
-    return os.path.join(view_root, "cmdline-tools", "latest")
-
-
 def create_avd(cfg):
     print("Creating AVD '%s' using %s" % (cfg.avd_name, cfg.system_image))
     os.makedirs(cfg.avd_home, exist_ok=True)
 
-    toolsdir = _build_avd_sdk_view(
-        cfg.state_dir,
-        cfg.sdk_root,
-        cfg.sysimg_root,
-        cfg.emulator_root,
-    )
+    # ANDROID_HOME already points at @android_sdk, which holds cmdline-tools,
+    # platforms, system-images and emulator in their canonical layout — so
+    # avdmanager finds everything natively, no view construction needed.
     avd_env = dict(cfg.env)
-    avd_env["JAVA_OPTS"] = '-Dcom.android.sdkmanager.toolsdir="%s"' % toolsdir
+    avd_env["JAVA_OPTS"] = (
+        '-Dcom.android.sdkmanager.toolsdir="%s"'
+        % os.path.join(cfg.sdk_root, "cmdline-tools", "latest")
+    )
 
     proc = subprocess.Popen(
         [
@@ -396,67 +345,37 @@ def wait_for_boot(cfg, serial):
     raise SystemExit("Timed out waiting for PackageManager on %s." % serial)
 
 
-def _state_path(state_dir):
-    return os.path.join(state_dir, "state.json")
-
-
-def load_state(state_dir):
-    try:
-        with open(_state_path(state_dir), "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return None
-
-
-def save_state(state_dir, data):
-    os.makedirs(state_dir, exist_ok=True)
-    with open(_state_path(state_dir), "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-
-def clear_state(state_dir):
-    try:
-        os.remove(_state_path(state_dir))
-    except OSError:
-        pass
-
-
-def is_live(cfg, serial):
-    return dict(adb_devices(cfg.adb, cfg.env)).get(serial) in ("device", "offline")
-
-
 class Config:
     def __init__(self):
-        self.label = LABEL
-        self.state_dir = state_dir_for(self.label)
-        self.avd_name = derived_avd_name(self.label)
-        self.avd_home = os.path.join(self.state_dir, "avd_home")
+        self.avd_name = AVD_NAME
+        self.state_dir = os.path.join(
+            workspace_root(), ".android_emulators", self.avd_name
+        )
+        self.avd_home = self.state_dir
         self.log_path = os.path.join(self.state_dir, "emulator.log")
 
         self.emulator_exe = rlocation(EMULATOR_EXE_RLOCATION)
-        self.emulator_root = os.path.dirname(self.emulator_exe)
         self.adb = rlocation(ADB_RLOCATION)
         self.avdmanager = rlocation(AVDMANAGER_RLOCATION)
         java_exe = rlocation(JAVA_RLOCATION)
         self.java_home = os.path.dirname(os.path.dirname(java_exe))
 
+        # adb lives at <sdk>/platform-tools/adb.exe; the system-image lives at
+        # <sdk>/system-images/<api>/<tag>/<abi>/. ANDROID_HOME = <sdk>.
         self.sdk_root = os.path.dirname(os.path.dirname(self.adb))
-        sys_marker = rlocation(SYSTEM_IMAGE_MARKER_RLOCATION)
-        self.sysimg_root = os.path.dirname(sys_marker)
-        self.sysdir = os.path.join(self.sysimg_root, *SYSTEM_IMAGE.split(";"))
         self.system_image = SYSTEM_IMAGE
+        self.sysdir = os.path.join(self.sdk_root, *SYSTEM_IMAGE.split(";"))
         self.env = hermetic_env(self.java_home, self.sdk_root, self.avd_home)
 
 
 def cmd_start(cfg):
-    existing = load_state(cfg.state_dir)
-    if existing and is_live(cfg, existing["serial"]):
+    run([cfg.adb, "start-server"], cfg.env)
+    existing = find_our_serial(cfg.adb, cfg.env, cfg.avd_name)
+    if existing:
         raise SystemExit(
             "Emulator '%s' already running as %s. Run `stop` first."
-            % (cfg.label, existing["serial"])
+            % (cfg.avd_name, existing)
         )
-    if existing:
-        clear_state(cfg.state_dir)
 
     os.makedirs(cfg.state_dir, exist_ok=True)
 
@@ -466,68 +385,42 @@ def cmd_start(cfg):
     else:
         create_avd(cfg)
 
-    run([cfg.adb, "start-server"], cfg.env)
     port = pick_free_port(used_emulator_ports(cfg.adb, cfg.env))
     serial = "emulator-%d" % port
     pid = spawn_emulator_detached(cfg, port)
-    save_state(
-        cfg.state_dir,
-        {
-            "label": cfg.label,
-            "port": port,
-            "serial": serial,
-            "pid": pid,
-            "log": cfg.log_path,
-        },
-    )
     print("Emulator spawned (pid=%d, serial=%s)" % (pid, serial))
     wait_for_boot(cfg, serial)
     print("Device ready: %s" % serial)
 
 
 def cmd_stop(cfg):
-    state = load_state(cfg.state_dir)
-    if not state:
-        print("Emulator '%s' is not running." % cfg.label)
-        return
-
-    serial = state["serial"]
     run([cfg.adb, "start-server"], cfg.env)
-    if not is_live(cfg, serial):
-        print("Emulator '%s' is not visible to adb; cleaning state." % cfg.label)
-        clear_state(cfg.state_dir)
+    serial = find_our_serial(cfg.adb, cfg.env, cfg.avd_name)
+    if not serial:
+        print("Emulator '%s' is not running." % cfg.avd_name)
         return
 
-    print("Stopping %s (%s)" % (cfg.label, serial))
+    print("Stopping %s (%s)" % (cfg.avd_name, serial))
     subprocess.run([cfg.adb, "-s", serial, "emu", "kill"], env=cfg.env)
     deadline = time.time() + SHUTDOWN_TIMEOUT_SEC
     while time.time() < deadline:
-        if not is_live(cfg, serial):
-            clear_state(cfg.state_dir)
+        if not find_our_serial(cfg.adb, cfg.env, cfg.avd_name):
             print("Emulator stopped.")
             return
         time.sleep(1)
-    raise SystemExit("Emulator %s still present after %ds." % (serial, SHUTDOWN_TIMEOUT_SEC))
+    raise SystemExit(
+        "Emulator '%s' (%s) still present after %ds." % (cfg.avd_name, serial, SHUTDOWN_TIMEOUT_SEC)
+    )
 
 
 def cmd_status(cfg):
-    state = load_state(cfg.state_dir)
-    running = False
-    serial = None
-    pid = None
-    if state:
-        serial = state["serial"]
-        pid = state.get("pid")
-        running = is_live(cfg, serial)
-        if not running:
-            clear_state(cfg.state_dir)
+    run([cfg.adb, "start-server"], cfg.env)
+    serial = find_our_serial(cfg.adb, cfg.env, cfg.avd_name)
 
-    print("label:    %s" % cfg.label)
-    print("running:  %s" % ("yes" if running else "no"))
-    if running:
+    print("avd:      %s" % cfg.avd_name)
+    print("running:  %s" % ("yes" if serial else "no"))
+    if serial:
         print("serial:   %s" % serial)
-        if pid is not None:
-            print("pid:      %s" % pid)
     print("state:    %s" % cfg.state_dir)
     if os.path.isfile(cfg.log_path):
         print("log:      %s" % cfg.log_path)

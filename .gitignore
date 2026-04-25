@@ -2,6 +2,8 @@
 bazel-*
 thirdparty/*
 _build
+/.android_emulators
 .claude/settings.local.json
 user.bazelrc
 .mado
+.android_emulators

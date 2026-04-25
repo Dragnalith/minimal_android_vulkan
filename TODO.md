@@ -1,8 +1,9 @@
+- [ ] verify why automatically boot of default emulator is not properly working (especially after emulator shutdown)
+- [ ] //...:device log, input, ...
 - [ ] Understand and remove the need to java toolchains in //BUILD.bazel
 - [x] bazel run ... for android
 - [ ] verify reproducibility (generate the same hash)
 - [ ] java.remote specify SHA256
 - [ ] sdkmanager download support sha256
-- [ ] //...:device log, input, ...
 - [ ] do we need sdk_view in _build/emulator?
 - [ ] android_emulator.system_image attribute

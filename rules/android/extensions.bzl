@@ -2,11 +2,10 @@
 
 Resolves Android SDK component and NDK URLs from Google's
 `repository2-3.xml` manifest and materialises `@android_sdk`, `@android_ndk`,
-`@android_sdk_toolchains`, and `@android_ndk_toolchains`. Optionally also
-materialises `@android_emulator` and `@android_system_image` (declared
-lazily; they only download when a build target references them, e.g.
-`bazel run //tools/android:simulator`). SHA-256 is not verified (Google only
-publishes SHA-1); the lockfile pins hashes on first run.
+`@android_sdk_toolchains`, and `@android_ndk_toolchains`. The optional
+emulator and system-image components are folded into `@android_sdk` itself
+so the resulting layout is a single ANDROID_HOME — no per-target view
+construction is needed when running `bazel run //path/to:emulator`.
 
 Typical `MODULE.bazel` pattern:
 
@@ -32,12 +31,10 @@ Environment overrides:
   * `ANDROID_SDK_HOST_OS` — override host OS detection.
 """
 
-load("//rules/android/private:android_emulator_repo.bzl", "android_emulator_repo")
 load("//rules/android/private:android_ndk_repo.bzl", "android_ndk_repo")
 load("//rules/android/private:android_ndk_toolchains_repo.bzl", "android_ndk_toolchains_repo")
 load("//rules/android/private:android_sdk_repo.bzl", "android_sdk_repo")
 load("//rules/android/private:android_sdk_toolchains_repo.bzl", "android_sdk_toolchains_repo")
-load("//rules/android/private:android_system_image_repo.bzl", "android_system_image_repo")
 load("//rules/android/private:google_repo.bzl", "build_index", "resolve_version")
 load("//rules/android/private:host_os.bzl", "detect_host_os")
 
@@ -45,8 +42,6 @@ SDK_REPO_NAME = "android_sdk"
 NDK_REPO_NAME = "android_ndk"
 SDK_TOOLCHAINS_REPO_NAME = "android_sdk_toolchains"
 NDK_TOOLCHAINS_REPO_NAME = "android_ndk_toolchains"
-EMULATOR_REPO_NAME = "android_emulator"
-SYSTEM_IMAGE_REPO_NAME = "android_system_image"
 
 def _sdk_components(index, cfg, host_os):
     """Resolve (url, sha256, dst) records for each requested SDK component."""
@@ -86,7 +81,36 @@ def _sdk_components(index, cfg, host_os):
             "alias_latest": rec.resolved_version != "latest",
         })
 
+    if cfg.emulator:
+        rec = resolve_version(index, "emulator", cfg.emulator, host_os)
+        out.append({
+            "url": rec.url,
+            "sha256": rec.sha256,
+            "dst": "emulator",
+            # The emulator archive ships only legacy source.properties; modern
+            # avdmanager looks for package.xml, so synthesise one after extract.
+            "synthesize_emulator_package_xml": True,
+        })
+
+    if cfg.system_image:
+        parts = cfg.system_image.split(";")
+        if len(parts) != 3:
+            fail(
+                "//rules/android: system_image must be 'api;tag;abi', got '{}'"
+                    .format(cfg.system_image),
+            )
+        api, tag, abi = parts
+        rec = resolve_version(index, "system-images", cfg.system_image, host_os)
+        out.append({
+            "url": rec.url,
+            "sha256": rec.sha256,
+            "dst": "system-images/{}/{}/{}".format(api, tag, abi),
+        })
+
     return out
+
+def _emulator_exe(host_os):
+    return "emulator.exe" if host_os == "windows" else "emulator"
 
 def _android_impl(mctx):
     cfg = None
@@ -114,6 +138,7 @@ def _android_impl(mctx):
         accept_licenses = cfg.accept_licenses,
         build_tools = cfg.build_tools,
         platform_version = cfg.platform_version,
+        emulator_exe = _emulator_exe(host_os),
     )
 
     ndk_rec = resolve_version(index, "ndk", cfg.ndk, host_os)
@@ -134,26 +159,6 @@ def _android_impl(mctx):
         min_api = cfg.min_api,
     )
 
-    # Emulator + system-image are declared as their own repos so they only
-    # materialise (and download) when something references a label inside
-    # them — i.e. when `bazel run //tools/android:simulator` is invoked.
-    if cfg.emulator:
-        emu_rec = resolve_version(index, "emulator", cfg.emulator, host_os)
-        android_emulator_repo(
-            name = EMULATOR_REPO_NAME,
-            url = emu_rec.url,
-            sha256 = emu_rec.sha256,
-        )
-
-    if cfg.system_image:
-        sys_rec = resolve_version(index, "system-images", cfg.system_image, host_os)
-        android_system_image_repo(
-            name = SYSTEM_IMAGE_REPO_NAME,
-            url = sys_rec.url,
-            sha256 = sys_rec.sha256,
-            version = cfg.system_image,
-        )
-
     return mctx.extension_metadata(reproducible = True)
 
 _configure_tag = tag_class(attrs = {
@@ -163,8 +168,8 @@ _configure_tag = tag_class(attrs = {
     "min_api": attr.string(mandatory = True, doc = "Minimum Android API level the NDK toolchain targets, e.g. '24'."),
     "platform_tools": attr.string(default = "", doc = "Optional platform-tools version (e.g. '34.0.3' or 'latest'); empty to skip."),
     "cmdline_tools": attr.string(default = "", doc = "Optional cmdline-tools version (e.g. '11.0' or 'latest'); empty to skip."),
-    "emulator": attr.string(default = "", doc = "Optional emulator package version (e.g. 'latest'); empty to skip. Materialises @android_emulator lazily."),
-    "system_image": attr.string(default = "", doc = "Optional system-image package ('<api>;<tag>;<abi>', e.g. 'android-36;google_apis;x86_64'); empty to skip. Materialises @android_system_image lazily."),
+    "emulator": attr.string(default = "", doc = "Optional emulator package version (e.g. 'latest'); empty to skip. Unpacked under @android_sdk//:emulator/."),
+    "system_image": attr.string(default = "", doc = "Optional system-image package ('<api>;<tag>;<abi>', e.g. 'android-36;google_apis;x86_64'); empty to skip. Unpacked under @android_sdk//:system-images/<api>/<tag>/<abi>/."),
     "accept_licenses": attr.bool(default = True, doc = "Write android-sdk-license hashes into @android_sdk/licenses/."),
     "host_os": attr.string(default = "", doc = "Override host OS ('linux' | 'macosx' | 'windows'); empty auto-detects."),
 })

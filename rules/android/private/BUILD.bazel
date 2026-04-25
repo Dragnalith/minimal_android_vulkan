@@ -23,6 +23,7 @@ filegroup(
 
 # Python templates expanded by the Android runner rules.
 exports_files([
+    "adb_runner.py.tpl",
     "apk_runner.py.tpl",
     "emulator_runner.py.tpl",
 ])
