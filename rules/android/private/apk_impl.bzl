@@ -18,8 +18,9 @@ _JAVA_RUNTIME_TOOLCHAIN = "@bazel_tools//tools/jdk:runtime_toolchain_type"
 _SDK_TOOLCHAIN = "//rules/android:sdk_toolchain_type"
 _PYTHON_TOOLCHAIN = "@rules_python//python:toolchain_type"
 
-# Platforms are authored as //:arm64-v8a, //:x86_64 etc. — the target name is
-# the Android ABI string that goes into lib/<abi>/ inside the APK.
+# Platforms are authored as //rules/android/platform:arm64-v8a,
+# //rules/android/platform:x86_64 etc. The target name is the Android ABI
+# string that goes into lib/<abi>/ inside the APK.
 def _abi_from_platform_label(label_str):
     return label_str.rsplit(":", 1)[-1]
 

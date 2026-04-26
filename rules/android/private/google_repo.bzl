@@ -6,8 +6,9 @@ The top-level manifest at
 `<remotePackage>` for build-tools, platforms, platform-tools, cmdline-tools,
 NDK, emulator, and more. System-images live in separate per-tag manifests
 rooted at `sys-img/<tag>/sys-img2-3.xml`. All of them ship SHA-1 only
-(which `ctx.download_and_extract` can't consume), so downloads run with
-`sha256=""` and the first-run SHA-256 is pinned via `MODULE.bazel.lock`.
+(which `ctx.download_and_extract` can't consume), so archive SHA-256s are
+hardcoded below. Archive entries without a known SHA-256 are ignored as if
+they did not exist.
 
 Archive URLs inside each manifest are relative to the manifest's own
 directory, so we carry a base URL alongside each manifest when merging
@@ -16,14 +17,16 @@ packages into the index.
 `build_index(ctx)` returns:
 
     {
-      "build-tools":    {"36.1.0":      {"linux": url, "windows": url, "macosx": url}, ...},
-      "platforms":      {"android-36":  {"all": url}, ...},
-      "platform-tools": {"36.0.0":      {"linux": url, ...}, ...},
-      "cmdline-tools":  {"16.0":        {"linux": url, ...}, ...},
-      "ndk":            {"29.0.14206865": {"windows": url, ...}, ...},
-      "emulator":       {"latest":      {"windows": url, ...}},
-      "system-images":  {"android-36;google_apis;x86_64": {"all": url}, ...},
+      "build-tools":    {"36.1.0":      {"linux": rec, "windows": rec, "macosx": rec}, ...},
+      "platforms":      {"android-36":  {"all": rec}, ...},
+      "platform-tools": {"latest":      {"linux": rec, ...}, ...},
+      "cmdline-tools":  {"latest":      {"linux": rec, ...}, ...},
+      "ndk":            {"29.0.14206865": {"windows": rec, ...}, ...},
+      "emulator":       {"latest":      {"windows": rec}},
+      "system-images":  {"android-36;google_apis;x86_64": {"all": rec}, ...},
     }
+
+where `rec` is `struct(url, sha256)`.
 """
 
 REPO_BASE = "https://dl.google.com/android/repository/"
@@ -42,6 +45,27 @@ _CATEGORIES = (
     "emulator",
     "system-images",
 )
+
+# Hardcoded allowlist for the Android packages this repository currently uses.
+# The key format is:
+#
+#     <remotePackage path>|<host-os or all>|<absolute archive URL>
+#
+# Packages missing from this table are treated as absent from Google's
+# manifests. This keeps `latest` from silently moving to an archive whose
+# SHA-256 has not been reviewed and pinned here.
+_KNOWN_ARCHIVE_SHA256S = {
+    "build-tools;36.1.0|windows|https://dl.google.com/android/repository/build-tools_r36.1_windows.zip": "23189d2d52b40a070a05e9cf7e497c9563f67fee76902e8fd3135ef29ef4dbeb",
+    "cmdline-tools;latest|windows|https://dl.google.com/android/repository/commandlinetools-win-14742923_latest.zip": "cc610ccbe83faddb58e1aa68e8fc8743bb30aa5e83577eceb4cc168dae95f9ee",
+    "emulator|windows|https://dl.google.com/android/repository/emulator-windows_x64-15261927.zip": "e768552aed01356784c71ad26b6493340101cea56f38d17396efea638248f024",
+    "ndk;29.0.14206865|windows|https://dl.google.com/android/repository/android-ndk-r29-windows.zip": "4f83a1a87ea0d33ae2b43812ce27b768be949bc78acf90b955134d19e3068f1c",
+    "platform-tools|windows|https://dl.google.com/android/repository/platform-tools_r37.0.0-win.zip": "4fe305812db074cea32903a489d061eb4454cbc90a49e8fea677f4b7af764918",
+    "platforms;android-36|all|https://dl.google.com/android/repository/platform-36_r02.zip": "37607369a28c5b640b3a7998868d45898ebcb777565a0e85f9acf36f29631d2e",
+    "system-images;android-36;google_apis;x86_64|all|https://dl.google.com/android/repository/sys-img/google_apis/x86_64-36_r07.zip": "b1bb0769d0bed7698e61f203d7dc9bf6e7c37cd01a39d0d8788a11186bc78160",
+}
+
+def _archive_key(path, host_os, url):
+    return "{}|{}|{}".format(path, host_os, url)
 
 def _extract_between(text, open_tag, close_tag, start = 0):
     """Return (inner, end_pos) for the first `<open_tag>...<close_tag>` after
@@ -136,7 +160,13 @@ def _merge_manifest(ctx, index, xml_url, local_name, base_url):
         per_os = {}
         for arch in archives:
             host_os = arch["host_os"] or "all"
-            per_os[host_os] = base_url + arch["url"]
+            url = base_url + arch["url"]
+            sha256 = _KNOWN_ARCHIVE_SHA256S.get(_archive_key(path, host_os, url))
+            if sha256 == None:
+                continue
+            per_os[host_os] = struct(url = url, sha256 = sha256)
+        if not per_os:
+            continue
         index[category][version] = per_os
 
 def build_index(ctx):
@@ -164,43 +194,42 @@ def build_index(ctx):
 def resolve_version(index, category, version, host_os):
     """Look up a URL for (category, version) restricted to host_os.
 
-    Returns `struct(url, sha256="", resolved_version)`. SHA-256 is empty
-    because Google's manifest only publishes SHA-1; the lockfile pins the
-    hash on first fetch.
+    Returns `struct(url, sha256, resolved_version)`. Entries without a known
+    SHA-256 are filtered out while building the index.
     """
     bucket = index.get(category)
     if not bucket:
-        fail("//rules/android: no '{}' entries in repository2-3.xml".format(category))
+        fail("//rules/android: no '{}' entries with known SHA-256 in repository manifests".format(category))
 
     if category == "platforms":
         if version == "latest":
             version = sorted(bucket.keys(), key = _api_num)[-1]
         per_os = bucket.get(version)
         if per_os == None:
-            fail("//rules/android: platform '{}' not in repository2-3.xml. Candidates: {}".format(
+            fail("//rules/android: platform '{}' not in repository manifests with known SHA-256. Candidates: {}".format(
                 version, sorted(bucket.keys()),
             ))
-        url = per_os.get("all") or per_os.get(host_os)
-        if url == None:
-            fail("//rules/android: platform '{}' has no archive. OSes: {}".format(
+        rec = per_os.get("all") or per_os.get(host_os)
+        if rec == None:
+            fail("//rules/android: platform '{}' has no archive with known SHA-256. OSes: {}".format(
                 version, sorted(per_os.keys()),
             ))
-        return struct(url = url, sha256 = "", resolved_version = version)
+        return struct(url = rec.url, sha256 = rec.sha256, resolved_version = version)
 
     if version == "latest":
         candidates = [v for v in bucket.keys() if host_os in bucket[v] or "all" in bucket[v]]
         if not candidates:
-            fail("//rules/android: no '{}' package for host '{}' in repository2-3.xml".format(category, host_os))
+            fail("//rules/android: no '{}' package for host '{}' with known SHA-256 in repository manifests".format(category, host_os))
         version = sorted(candidates, key = _version_key)[-1]
 
     per_os = bucket.get(version)
     if per_os == None:
-        fail("//rules/android: '{}' version '{}' not in repository2-3.xml. Candidates: {}".format(
+        fail("//rules/android: '{}' version '{}' not in repository manifests with known SHA-256. Candidates: {}".format(
             category, version, sorted(bucket.keys(), key = _version_key),
         ))
-    url = per_os.get(host_os) or per_os.get("all")
-    if url == None:
-        fail("//rules/android: '{}' version '{}' has no '{}' archive. Available OSes: {}".format(
+    rec = per_os.get(host_os) or per_os.get("all")
+    if rec == None:
+        fail("//rules/android: '{}' version '{}' has no '{}' archive with known SHA-256. Available OSes: {}".format(
             category, version, host_os, sorted(per_os.keys()),
         ))
-    return struct(url = url, sha256 = "", resolved_version = version)
+    return struct(url = rec.url, sha256 = rec.sha256, resolved_version = version)

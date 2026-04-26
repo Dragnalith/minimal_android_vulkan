@@ -2,6 +2,7 @@
 
 load("//rules/android/private:runner_common.bzl", "rlocation_path", "write_python_launcher")
 
+_JAVA_RUNTIME_TOOLCHAIN = "@bazel_tools//tools/jdk:runtime_toolchain_type"
 _PYTHON_TOOLCHAIN = "@rules_python//python:toolchain_type"
 
 # avdmanager rejects AVD names outside this character set, so reject early at
@@ -15,11 +16,19 @@ def _validate_avd_name(name):
                 "android_emulator: target name '{}' contains '{}', which is not valid in an AVD name. Allowed: A-Z a-z 0-9 . _ -".format(name, ch),
             )
 
+def _find_in_runtime(java_runtime, basename):
+    for f in java_runtime.files.to_list():
+        if f.basename == basename:
+            return f
+    fail("Could not find {} in Java runtime {}".format(basename, java_runtime))
+
 def _py_string(value):
     return repr(value)
 
 def _android_emulator_impl(ctx):
     _validate_avd_name(ctx.label.name)
+    java_runtime = ctx.toolchains[_JAVA_RUNTIME_TOOLCHAIN].java_runtime
+    java_exe = _find_in_runtime(java_runtime, "java.exe")
 
     runner_script = ctx.actions.declare_file(ctx.label.name + "_runner.py")
     ctx.actions.expand_template(
@@ -30,7 +39,7 @@ def _android_emulator_impl(ctx):
             "__EMULATOR_EXE_RLOCATION__": _py_string(rlocation_path(ctx.file._emulator_exe)),
             "__ADB_RLOCATION__": _py_string(rlocation_path(ctx.file._adb)),
             "__AVDMANAGER_RLOCATION__": _py_string(rlocation_path(ctx.file._avdmanager)),
-            "__JAVA_RLOCATION__": _py_string(rlocation_path(ctx.file._java)),
+            "__JAVA_RLOCATION__": _py_string(rlocation_path(java_exe)),
             "__SYSTEM_IMAGE__": _py_string(ctx.attr.system_image),
             "__AVD_NAME__": _py_string(ctx.label.name),
         },
@@ -48,7 +57,7 @@ def _android_emulator_impl(ctx):
         ctx.files._platform_tools_runtime +
         ctx.files._cmdline_tools_runtime +
         ctx.files._system_image_runtime +
-        ctx.files._jdk
+        java_runtime.files.to_list()
     )
     runfiles = ctx.runfiles(
         files = [
@@ -57,7 +66,7 @@ def _android_emulator_impl(ctx):
             ctx.file._emulator_exe,
             ctx.file._adb,
             ctx.file._avdmanager,
-            ctx.file._java,
+            java_exe,
         ],
         transitive_files = depset(
             runtime_files,
@@ -109,18 +118,13 @@ android_emulator = rule(
             allow_files = True,
             default = "@android_sdk//:system_image_runtime",
         ),
-        "_java": attr.label(
-            allow_single_file = True,
-            default = "@remote_jdk//:bin/java.exe",
-        ),
-        "_jdk": attr.label(
-            allow_files = True,
-            default = "@remote_jdk//:jdk",
-        ),
         "_windows_constraint": attr.label(
             default = "@platforms//os:windows",
         ),
     },
-    toolchains = [_PYTHON_TOOLCHAIN],
+    toolchains = [
+        _JAVA_RUNTIME_TOOLCHAIN,
+        _PYTHON_TOOLCHAIN,
+    ],
     executable = True,
 )

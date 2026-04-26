@@ -36,13 +36,6 @@ use_repo(
     "remote_jdk_toolchain_config_repo",
 )
 
-# Registered before any other toolchain so they win resolution over
-# rules_java's auto-registered failing local_jdk.
-register_toolchains(
-    "//:remote_jdk_runtime",
-    "//:remote_jdk_bootstrap_runtime",
-)
-
 register_toolchains("@remote_jdk_toolchain_config_repo//:all")
 
 register_toolchains("//toolchains/glslc:glslc_windows_toolchain")
