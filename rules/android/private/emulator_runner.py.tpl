@@ -15,8 +15,8 @@ JAVA_RLOCATION = __JAVA_RLOCATION__
 SYSTEM_IMAGE = __SYSTEM_IMAGE__
 AVD_NAME = __AVD_NAME__
 
-BOOT_TIMEOUT_SEC = 300
-SHUTDOWN_TIMEOUT_SEC = 30
+BOOT_TIMEOUT_SEC = 60
+SHUTDOWN_TIMEOUT_SEC = 60
 EMULATOR_PORT_MIN = 5554
 EMULATOR_PORT_MAX = 5680
 
@@ -132,12 +132,106 @@ def adb_devices(adb, env):
     return rows
 
 
+def adb_device_state(adb, env, serial):
+    return dict(adb_devices(adb, env)).get(serial)
+
+
 def running_emulator_serials(adb, env):
     return [
         serial
         for serial, _state in adb_devices(adb, env)
         if serial.startswith("emulator-")
     ]
+
+
+def stale_emulator_transports(adb, env):
+    return [
+        (serial, state)
+        for serial, state in adb_devices(adb, env)
+        if serial.startswith("emulator-") and state != "device"
+    ]
+
+
+def format_transports(rows):
+    return ", ".join("%s(%s)" % (serial, state) for serial, state in rows)
+
+
+def reset_adb_server(adb, env, restart):
+    print("Resetting adb server.")
+    run([adb, "kill-server"], env)
+    if restart:
+        run([adb, "start-server"], env)
+
+
+def reset_stale_emulator_transports(adb, env):
+    stale = stale_emulator_transports(adb, env)
+    if not stale:
+        return
+    print("Clearing stale adb emulator transports: %s" % format_transports(stale))
+    reset_adb_server(adb, env, restart=True)
+
+
+def powershell_string(value):
+    return "'" + value.replace("'", "''") + "'"
+
+
+def windows_emulator_processes(cfg):
+    if os.name != "nt":
+        return []
+
+    emulator_dir = os.path.normpath(os.path.dirname(cfg.emulator_exe))
+    ps_script = (
+        "$needleAvd = " + powershell_string("-avd " + cfg.avd_name) + "\n"
+        "$needleHome = " + powershell_string(os.path.normpath(cfg.avd_home)) + "\n"
+        "$needleEmulatorDir = " + powershell_string(emulator_dir) + "\n"
+        "$needleEmulatorDirSlash = " + powershell_string(emulator_dir.replace("\\", "/")) + "\n"
+        "$names = @('cmd.exe', 'emulator.exe', 'qemu-system-x86_64.exe')\n"
+        "Get-CimInstance Win32_Process | Where-Object {\n"
+        "    $_.CommandLine -and\n"
+        "    ($names -contains $_.Name) -and\n"
+        "    (\n"
+        "        $_.CommandLine.Contains($needleAvd) -or\n"
+        "        $_.CommandLine.Contains($needleHome) -or\n"
+        # `adb emu kill` leaves short-lived `emulator -kill ...` helpers on Windows.
+        "        (\n"
+        "            $_.CommandLine.Contains(' -kill ') -and\n"
+        "            ($_.CommandLine.Contains($needleEmulatorDir) -or $_.CommandLine.Contains($needleEmulatorDirSlash))\n"
+        "        )\n"
+        "    )\n"
+        "} | ForEach-Object { \"$($_.ProcessId) $($_.Name)\" }\n"
+    )
+    result = subprocess.run(
+        [
+            "powershell.exe",
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            ps_script,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        print("Warning: could not query emulator processes: %s" % result.stderr.strip())
+        return []
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def wait_for_emulator_process_exit(cfg):
+    if os.name != "nt":
+        return True, []
+
+    deadline = time.time() + SHUTDOWN_TIMEOUT_SEC
+    last_processes = []
+    while time.time() < deadline:
+        processes = windows_emulator_processes(cfg)
+        if not processes:
+            return True, last_processes
+        last_processes = processes
+        time.sleep(1)
+    return False, last_processes
 
 
 def used_emulator_ports(adb, env):
@@ -317,10 +411,16 @@ def spawn_emulator_detached(cfg, port):
 def wait_for_boot(cfg, serial):
     print("Waiting for %s to boot (up to %ds)..." % (serial, BOOT_TIMEOUT_SEC))
     deadline = time.time() + BOOT_TIMEOUT_SEC
+    reset_after_offline = True
 
     while time.time() < deadline:
-        if dict(adb_devices(cfg.adb, cfg.env)).get(serial) == "device":
+        state = adb_device_state(cfg.adb, cfg.env, serial)
+        if state == "device":
             break
+        if state == "offline" and reset_after_offline:
+            print("%s is offline in adb; restarting adb server once." % serial)
+            reset_adb_server(cfg.adb, cfg.env, restart=True)
+            reset_after_offline = False
         time.sleep(2)
     else:
         raise SystemExit("Emulator %s never reached 'device' state." % serial)
@@ -376,6 +476,21 @@ def cmd_start(cfg):
             "Emulator '%s' already running as %s. Run `stop` first."
             % (cfg.avd_name, existing)
         )
+    processes = windows_emulator_processes(cfg)
+    if processes:
+        raise SystemExit(
+            "Emulator '%s' already has running processes: %s. Run `stop` first."
+            % (cfg.avd_name, ", ".join(processes))
+        )
+
+    reset_adb_server(cfg.adb, cfg.env, restart=True)
+    reset_stale_emulator_transports(cfg.adb, cfg.env)
+    existing = find_our_serial(cfg.adb, cfg.env, cfg.avd_name)
+    if existing:
+        raise SystemExit(
+            "Emulator '%s' already running as %s. Run `stop` first."
+            % (cfg.avd_name, existing)
+        )
 
     os.makedirs(cfg.state_dir, exist_ok=True)
 
@@ -393,24 +508,42 @@ def cmd_start(cfg):
     print("Device ready: %s" % serial)
 
 
+def wait_for_serial_disconnect(cfg, serial):
+    deadline = time.time() + SHUTDOWN_TIMEOUT_SEC
+    last_state = None
+    while time.time() < deadline:
+        state = adb_device_state(cfg.adb, cfg.env, serial)
+        if state is None:
+            return True, last_state
+        last_state = state
+        time.sleep(1)
+    return False, last_state
+
+
 def cmd_stop(cfg):
     run([cfg.adb, "start-server"], cfg.env)
     serial = find_our_serial(cfg.adb, cfg.env, cfg.avd_name)
     if not serial:
+        reset_stale_emulator_transports(cfg.adb, cfg.env)
         print("Emulator '%s' is not running." % cfg.avd_name)
         return
 
     print("Stopping %s (%s)" % (cfg.avd_name, serial))
-    subprocess.run([cfg.adb, "-s", serial, "emu", "kill"], env=cfg.env)
-    deadline = time.time() + SHUTDOWN_TIMEOUT_SEC
-    while time.time() < deadline:
-        if not find_our_serial(cfg.adb, cfg.env, cfg.avd_name):
-            print("Emulator stopped.")
-            return
-        time.sleep(1)
-    raise SystemExit(
-        "Emulator '%s' (%s) still present after %ds." % (cfg.avd_name, serial, SHUTDOWN_TIMEOUT_SEC)
-    )
+    run([cfg.adb, "-s", serial, "emu", "kill"], cfg.env)
+    disconnected, last_state = wait_for_serial_disconnect(cfg, serial)
+    if not disconnected:
+        print(
+            "Emulator '%s' (%s) still listed by adb as %s after %ds."
+            % (cfg.avd_name, serial, last_state or "unknown", SHUTDOWN_TIMEOUT_SEC)
+        )
+    exited, processes = wait_for_emulator_process_exit(cfg)
+    if not exited:
+        print(
+            "Emulator '%s' still has processes after %ds: %s"
+            % (cfg.avd_name, SHUTDOWN_TIMEOUT_SEC, ", ".join(processes))
+        )
+    reset_adb_server(cfg.adb, cfg.env, restart=False)
+    print("Emulator stopped.")
 
 
 def cmd_status(cfg):
